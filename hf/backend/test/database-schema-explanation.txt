@@ -1,0 +1,359 @@
+Database Schema Explanation
+
+This file explains the database schema for the Figma Hiring Platform.
+I'm writing this down so I (and anyone else) can understand how everything
+connects together. It's basically a reference guide.
+
+The database uses Sequelize ORM with PostgreSQL (I think? Check the config).
+All tables use UUIDs for primary keys, which is nice for security and
+distributed systems.
+
+
+================================================================================
+CORE USER SYSTEM
+================================================================================
+
+Everything starts with the User table. This is the authentication layer.
+Users can be either 'candidate' or 'recruiter' - it's an enum so we
+can't accidentally create weird roles.
+
+User Table (users)
+------------------
+Fields:
+  - id: UUID (primary key, auto-generated)
+  - email: STRING (unique, required, validated as email)
+  - password: STRING (required, hashed with bcrypt before save)
+  - role: ENUM('candidate', 'recruiter') - required
+  - isActive: BOOLEAN (default: true) - for soft deletes maybe?
+  - isVerified: BOOLEAN (default: false) - email verification
+  - createdAt, updatedAt: timestamps (auto-managed)
+
+Notes:
+  - The password gets hashed automatically via hooks before create/update
+  - There's also a comparePassword method on the model for login
+
+
+================================================================================
+CANDIDATE PROFILE SYSTEM
+================================================================================
+
+When a user signs up as a candidate, they get a Candidate profile.
+One user = one candidate profile (1:1 relationship via userId).
+
+Candidate Table (candidates)
+----------------------------
+Fields:
+  - id: UUID (primary key)
+  - userId: UUID (foreign key to users.id, unique, required)
+  - fullName: STRING (optional - can be filled later)
+  - contactNumber: STRING (optional)
+  - location: STRING (optional)
+  - isFresher: BOOLEAN (default: false) - tracks if they're new to the field
+  - resumeUrl: STRING (optional) - path to uploaded resume
+  - questionnaireCompleted: BOOLEAN (default: false) - onboarding status
+  - createdAt, updatedAt: timestamps
+
+Relationship:
+  - User.hasOne(Candidate) / Candidate.belongsTo(User)
+  - This means each user can have at most one candidate profile
+
+
+CANDIDATE-RELATED TABLES
+These are all linked to the Candidate table via candidateId
+
+Education Table (educations)
+-----------------------------
+Fields:
+  - id: UUID (primary key)
+  - candidateId: UUID (foreign key to candidates.id, required)
+  - degree: STRING (required) - e.g., "Bachelor of Science"
+  - institution: STRING (required) - school name
+  - yearOfCompletion: INTEGER (required)
+  - createdAt, updatedAt: timestamps
+
+Relationship:
+  - Candidate.hasMany(Education)
+  - A candidate can have multiple education entries (high school, college, etc.)
+
+
+Experience Table (experiences)
+------------------------------
+Fields:
+  - id: UUID (primary key)
+  - candidateId: UUID (foreign key to candidates.id, required)
+  - companyName: STRING (required)
+  - role: STRING (required) - job title
+  - fromDate: DATE (required)
+  - toDate: DATE (optional) - null if still working there
+  - isCurrent: BOOLEAN (default: false) - marks current job
+  - createdAt, updatedAt: timestamps
+
+Relationship:
+  - Candidate.hasMany(Experience)
+  - Candidates can have multiple work experiences
+
+
+Skill Table (skills)
+--------------------
+Fields:
+  - id: UUID (primary key)
+  - candidateId: UUID (foreign key to candidates.id, required)
+  - name: STRING (required) - skill name like "JavaScript", "Python", etc.
+  - createdAt, updatedAt: timestamps
+
+Relationship:
+  - Candidate.hasMany(Skill)
+  - Simple many-to-many would be overkill here, so we just store
+    skills directly linked to candidates
+
+
+================================================================================
+RECRUITER PROFILE SYSTEM
+================================================================================
+
+Similar to candidates, but for recruiters. They have company info
+and verification status.
+
+Recruiter Table (recruiters)
+-----------------------------
+Fields:
+  - id: UUID (primary key)
+  - userId: UUID (foreign key to users.id, unique, required)
+  - fullName: STRING (optional)
+  - role: STRING (optional) - their role at the company
+  - contactNumber: STRING (optional)
+  - linkedinProfile: STRING (optional)
+  - companyName: STRING (optional)
+  - companyWebsite: STRING (optional)
+  - industryType: STRING (optional)
+  - companySize: STRING (optional) - probably like "1-50", "51-200", etc.
+  - headquartersLocation: STRING (optional)
+  - companyLogoUrl: STRING (optional) - uploaded logo
+  - businessProofUrl: STRING (optional) - verification document
+  - domainEmail: STRING (optional) - company email domain
+  - isVerified: BOOLEAN (default: false) - admin verification
+  - questionnaireCompleted: BOOLEAN (default: false)
+  - createdAt, updatedAt: timestamps
+
+Relationship:
+  - User.hasOne(Recruiter) / Recruiter.belongsTo(User)
+
+
+RECRUITER-RELATED TABLES
+
+RecruiterExperience Table (recruiter_experiences)
+--------------------------------------------------
+Fields:
+  - id: UUID (primary key)
+  - recruiterId: UUID (foreign key to recruiters.id, required)
+  - companyName: STRING (required)
+  - role: STRING (required)
+  - fromDate: DATE (required)
+  - toDate: DATE (optional)
+  - isCurrent: BOOLEAN (default: false)
+  - createdAt, updatedAt: timestamps
+
+Relationship:
+  - Recruiter.hasMany(RecruiterExperience)
+  - Same structure as candidate experiences, just separate table
+
+
+RecruiterSkill Table (recruiter_skills)
+----------------------------------------
+Fields:
+  - id: UUID (primary key)
+  - recruiterId: UUID (foreign key to recruiters.id, required)
+  - name: STRING (required)
+  - createdAt, updatedAt: timestamps
+
+Relationship:
+  - Recruiter.hasMany(RecruiterSkill)
+  - Again, same pattern as candidate skills
+
+
+================================================================================
+JOB POSTING SYSTEM
+================================================================================
+
+Recruiters create job postings. Jobs have skills, and candidates
+can apply to them.
+
+Job Table (jobs)
+----------------
+Fields:
+  - id: UUID (primary key)
+  - recruiterId: UUID (foreign key to recruiters.id, required)
+  - title: STRING (required) - job title
+  - companyName: STRING (required) - might duplicate recruiter's company
+  - companyLogoUrl: STRING (optional)
+  - location: STRING (required)
+  - jobType: ENUM('Full-time', 'Part-time', 'Contract', 'Internship', 'Freelance')
+    default: 'Full-time'
+  - workMode: ENUM('Remote', 'Hybrid', 'On-site')
+    default: 'On-site'
+  - experienceLevel: STRING (required) - probably like "Entry", "Mid", "Senior"
+  - salaryMin: DECIMAL(10, 2) (optional)
+  - salaryMax: DECIMAL(10, 2) (optional)
+  - salaryCurrency: STRING (default: 'USD')
+  - description: TEXT (required) - full job description
+  - requirements: TEXT (optional) - job requirements
+  - benefits: TEXT (optional) - company benefits
+  - isActive: BOOLEAN (default: true) - for closing/archiving jobs
+  - createdAt, updatedAt: timestamps
+
+Relationship:
+  - Recruiter.hasMany(Job) / Job.belongsTo(Recruiter)
+  - One recruiter can post many jobs
+
+
+JobSkill Table (job_skills)
+---------------------------
+Fields:
+  - id: UUID (primary key)
+  - jobId: UUID (foreign key to jobs.id, required)
+  - skillName: STRING (required) - the skill name
+  - createdAt, updatedAt: timestamps
+
+Relationship:
+  - Job.hasMany(JobSkill) / JobSkill.belongsTo(Job)
+  - Jobs can have multiple required skills
+  - This is used for matching candidates to jobs probably
+
+
+================================================================================
+APPLICATION SYSTEM
+================================================================================
+
+Candidates apply to jobs. This creates a JobApplication record.
+
+JobApplication Table (job_applications)
+----------------------------------------
+Fields:
+  - id: UUID (primary key)
+  - jobId: UUID (foreign key to jobs.id, required)
+  - candidateId: UUID (foreign key to candidates.id, required)
+  - status: ENUM('Applied', 'Under Review', 'Interview', 'Offer', 'Rejected')
+    default: 'Applied'
+  - resumeUrl: STRING (optional) - might be different from candidate's default
+  - coverLetter: TEXT (optional) - cover letter text
+  - coverLetterUrl: STRING (optional) - uploaded cover letter file
+  - appliedAt: DATE (default: NOW) - when they applied
+  - createdAt, updatedAt: timestamps
+
+Relationships:
+  - Job.hasMany(JobApplication) / JobApplication.belongsTo(Job)
+  - Candidate.hasMany(JobApplication) / JobApplication.belongsTo(Candidate)
+  
+  - This is a many-to-many relationship between Jobs and Candidates
+    through the JobApplication join table
+
+
+================================================================================
+SAVED JOBS
+================================================================================
+
+Candidates can save jobs to apply later. Simple bookmarking feature.
+
+SavedJob Table (saved_jobs)
+----------------------------
+Fields:
+  - id: UUID (primary key)
+  - jobId: UUID (foreign key to jobs.id, required)
+  - candidateId: UUID (foreign key to candidates.id, required)
+  - createdAt, updatedAt: timestamps
+
+Notes:
+  - There's a unique index on (jobId, candidateId) to prevent duplicates
+  - So a candidate can't save the same job twice
+
+Relationships:
+  - Job.hasMany(SavedJob) / SavedJob.belongsTo(Job)
+  - Candidate.hasMany(SavedJob) / SavedJob.belongsTo(Candidate)
+
+
+================================================================================
+INTERVIEW SYSTEM
+================================================================================
+
+When a candidate gets to the interview stage, recruiters can schedule
+interviews. This table tracks all that.
+
+Interview Table (interviews)
+-----------------------------
+Fields:
+  - id: UUID (primary key)
+  - recruiterId: UUID (foreign key to recruiters.id, required)
+  - jobId: UUID (foreign key to jobs.id, required)
+  - candidateId: UUID (foreign key to candidates.id, required)
+  - interviewDate: DATEONLY (required) - just the date, no time
+  - interviewTime: STRING (required) - time as string, probably "14:30" format
+  - mode: ENUM('Online', 'Offline') (default: 'Online')
+  - status: ENUM('Scheduled', 'Completed', 'Canceled') (default: 'Scheduled')
+  - notes: TEXT (optional) - interview notes
+  - location: STRING (optional) - for offline interviews
+  - meetingLink: STRING (optional) - Zoom/Meet link for online
+  - rescheduleRequestReason: TEXT (optional) - if someone wants to reschedule
+  - rescheduleRequestedAt: DATE (optional) - when reschedule was requested
+  - createdAt, updatedAt: timestamps
+
+Relationships:
+  - Recruiter.hasMany(Interview) / Interview.belongsTo(Recruiter)
+  - Job.hasMany(Interview) / Interview.belongsTo(Job)
+  - Candidate.hasMany(Interview) / Interview.belongsTo(Candidate)
+  
+  - This links recruiters, jobs, and candidates together for interviews
+
+
+================================================================================
+SUMMARY OF RELATIONSHIPS
+================================================================================
+
+Let me map out the main relationships:
+
+User (1) -> (1) Candidate
+User (1) -> (1) Recruiter
+
+Candidate (1) -> (many) Education
+Candidate (1) -> (many) Experience
+Candidate (1) -> (many) Skill
+Candidate (1) -> (many) JobApplication
+Candidate (1) -> (many) SavedJob
+Candidate (1) -> (many) Interview
+
+Recruiter (1) -> (many) RecruiterExperience
+Recruiter (1) -> (many) RecruiterSkill
+Recruiter (1) -> (many) Job
+Recruiter (1) -> (many) Interview
+
+Job (1) -> (many) JobSkill
+Job (1) -> (many) JobApplication
+Job (1) -> (many) SavedJob
+Job (1) -> (many) Interview
+
+JobApplication is a join table between Job and Candidate (many-to-many)
+SavedJob is a join table between Job and Candidate (many-to-many)
+Interview links Recruiter, Job, and Candidate together
+
+All relationships are defined in the model files using Sequelize associations.
+The index.js file imports all models, which ensures associations are loaded.
+Make sure to import models in the right order to avoid circular dependencies.
+
+
+================================================================================
+NOTES FOR FUTURE ME (or anyone else)
+================================================================================
+
+- All IDs are UUIDs, which is good for security but might be slower than integers
+- Most optional fields are nullable, which allows for gradual profile completion
+- The questionnaireCompleted flags help track onboarding progress
+- The isActive/isVerified flags are useful for moderation
+- Timestamps are auto-managed by Sequelize
+- Password hashing happens automatically via model hooks
+- The unique constraint on saved_jobs prevents duplicate saves
+
+Things to consider:
+- Maybe add indexes on frequently queried fields (email, userId, etc.)
+- The skill tables could potentially be normalized into a single skills table
+  with a type field, but the current approach is simpler
+- Interview rescheduling might need a separate table if it gets complex
+
